@@ -111,3 +111,42 @@ while true do
     checkHolding()
     wait(0.3)
 end
+name: Build Tweak
+
+on:   
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          echo "$HOME/theos/bin" >> $GITHUB_PATH
+
+      - name: Install ldid
+        run: |
+          brew install ldid
+
+      - name: Build with Theos
+        run: |
+          make clean
+          make package
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: tweak-deb
+          path: |
+            *.deb
+            packages/*.deb
+            .theos/_/*.deb
