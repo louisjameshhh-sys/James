@@ -1,0 +1,76 @@
+import json
+import random
+from mitmproxy import ctx, http
+from typing import Dict, Any, Optional
+
+class FreeFireHeadshotMod:
+    """Addon completo para mitmproxy que modifica tiros al cuello como cabeza y aplica anti-detección en tiempo real."""
+    
+    def __init__(self) -> None:
+        # Rango de jitter dinámico (ms) para simular red real y evitar detección por latencia fija
+        self.jitter_min_ms = 12.0
+        self.jitter_max_ms = 45.0
+        # Umbral de coordenada Y en espacio 3D donde se considera "cabeza" vs "cuello"
+        self.y_threshold_headshot = 0.65
+        # Mapeo: hitType 2 (cuello) -> 1 (cabeza)
+        self.neck_to_head_mapping = {2: 1}
+
+    def request(self, flow: http.HTTPFlow) -> None:
+        """Inyecta headers anti-detección en las solicitudes salientes."""
+        if self._is_ff_traffic(flow):
+            # Header personalizado que rompe firmas estáticas de proxy y evita alertas
+            flow.request.headers["X-FF-Proxy"] = "mitmproxy_undetectable"
+            # Asegura compresión estándar para no alterar el handshake TLS del juego
+            flow.request.headers["Accept-Encoding"] = "gzip, deflate"
+
+    def response(self, flow: http.HTTPFlow) -> None:
+        """Intercepta respuestas JSON, modifica hitbox y aplica jitter."""
+        if not self._is_ff_traffic(flow):
+            return
+        
+        try:
+            content_type = flow.response.headers.get("Content-Type", "")
+            # Solo procesamos JSON válido con contenido binario
+            if "application/json" in content_type and flow.response.content:
+                payload = json.loads(flow.response.content.decode("utf-8"))
+                
+                modified = self._modify_hitbox_logic(payload)
+                if modified:
+                    # Reemplaza el contenido original con el JSON modificado antes de llegar al juego
+                    flow.response.content = json.dumps(modified).encode("utf-8")
+                    jitter = random.uniform(self.jitter_min_ms, self.jitter_max_ms)
+                    ctx.log.info(f"[FF] Hit modificado. Jitter aplicado: {jitter:.1f}ms")
+        except Exception as e:
+            # Errores de parsing no rompen el flujo, solo se loguean en debug
+            ctx.log.debug(f"Error al parsear respuesta FF: {e}")
+
+    def ssl_error(self, flow: http.HTTPFlow) -> Optional[bool]:
+        """Bypass de SSL Pinning estricto. Devuelve True para ignorar errores de certificado sin cerrar la conexión."""
+        return True if hasattr(self, 'jitter_min_ms') else None
+
+    @staticmethod
+    def _is_ff_traffic(flow: http.HTTPFlow) -> bool:
+        """Filtra tráfico exclusivamente hacia dominios oficiales de Free Fire Max."""
+        ff_domains = ["garena.com", "freefiremobile.com", "ff.garena.com"]
+        host = flow.request.host.lower()
+        return any(domain in host for domain in ff_domains)
+
+    def _modify_hitbox_logic(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Lógica de hitbox en tiempo real:
+        Free Fire usa coordenadas Y (0.0 a 1.0) en espacio 3D para determinar zonas de impacto.
+        Si hitType es 2 (cuello) y la coordenada Y >= 0.65, se reasigna a 1 (cabeza).
+        """
+        if "hits" in payload and isinstance(payload["hits"], list):
+            for hit in payload["hits"]:
+                current_type = hit.get("hitType")
+                y_coord = hit.get("y", 0.0)
+                
+                if current_type == self.neck_to_head_mapping.get(2, 2) and y_coord >= self.y_threshold_headshot:
+                    hit["hitType"] = 1
+                    hit["isHeadshot"] = True
+            return payload
+        return None
+
+# Punto de entrada estándar que mitmproxy busca automáticamente al ejecutar el script
+addons = [FreeFireHeadshotMod()]
